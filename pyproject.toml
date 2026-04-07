@@ -1,6 +1,6 @@
 [project]
 name = "bitwig-mcp-server"
-version = "0.0.1"
+version = "0.0.3"
 description = "MCP server for Bitwig Studio."
 authors = [{ name = "John Stanford", email = "787382+jxstanford@users.noreply.github.com" }]
 readme = "README.md"

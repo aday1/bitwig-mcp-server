@@ -39,6 +39,14 @@ cd bitwig-mcp-server
 uv sync
 ```
 
+## Quick install helper (MCP tool)
+
+After you add this server to Cursor (or another MCP client), you can call the tool **`get_bitwig_mcp_install_guide`** anytime. It does not need Bitwig running.
+
+- **`topic`** = `full` (default), `cursor`, `bitwig_osc`, `index`, `dashboard`, or `troubleshoot`
+
+Use it to paste OS-specific paths, UDP port rules, and troubleshooting into chat. Then run **`bitwig_diagnose`** once Bitwig and OSC are up.
+
 ## Usage
 
 ### 1. Configure Bitwig Studio
@@ -60,6 +68,12 @@ python -m bitwig_mcp_server
 # Or run with custom settings
 python -m bitwig_mcp_server --host 127.0.0.1 --send-port 8000 --receive-port 9000 --transport stdio --debug
 ```
+
+### Local reference dashboard (optional)
+
+Set `BITWIG_MCP_DASHBOARD=1` in the MCP server environment (e.g. Cursor MCP config). Then open http://127.0.0.1:3848/ for grouped tool names, OSC and automation notes, and copy-paste starter prompts. JSON endpoints: `/api/reference` and `/api/events`. Override the port with `BITWIG_MCP_DASHBOARD_PORT` if needed.
+
+Device parameter tools (`set_device_parameter`, etc.) accept `automation_touch` (default true) so Bitwig receives `/device/param/N/touched` around value changes for Latch/Touch automation recording.
 
 ### 3. Add to Claude Desktop
 

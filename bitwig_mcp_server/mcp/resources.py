@@ -16,6 +16,26 @@ from bitwig_mcp_server.osc.controller import BitwigOSCController
 logger = logging.getLogger(__name__)
 
 
+def _collect_existing_slots(
+    controller: BitwigOSCController,
+    exists_path_pattern: str,
+    max_slots: int = 256,
+    stop_after_missing: int = 16,
+) -> List[int]:
+    slots: List[int] = []
+    missing_streak = 0
+    for i in range(1, max_slots + 1):
+        exists = bool(controller.server.get_message(exists_path_pattern.format(i=i)))
+        if exists:
+            slots.append(i)
+            missing_streak = 0
+        else:
+            missing_streak += 1
+            if missing_streak >= stop_after_missing and slots:
+                break
+    return slots
+
+
 def get_bitwig_resources() -> List[Resource]:
     """Get all available Bitwig resources
 
@@ -185,6 +205,8 @@ async def read_resource(controller: BitwigOSCController, uri: str) -> str:
     Raises:
         ValueError: If resource URI is unknown
     """
+    uri = str(uri)
+
     # Refresh state from Bitwig
     controller.client.refresh()
     await asyncio.sleep(0.5)  # Wait for responses
@@ -552,8 +574,9 @@ def _read_device_parameters_resource(controller: BitwigOSCController) -> str:
         params_info.append(f"Device: {device_name}")
         params_info.append("Parameters:")
 
-        # Get information for up to 8 parameters
-        for i in range(1, 9):
+        for i in _collect_existing_slots(
+            controller, "/device/param/{i}/exists", max_slots=512, stop_after_missing=32
+        ):
             param_exists = controller.server.get_message(f"/device/param/{i}/exists")
             if param_exists:
                 param_name = controller.server.get_message(f"/device/param/{i}/name")
@@ -597,8 +620,8 @@ def _read_device_siblings_resource(controller: BitwigOSCController) -> str:
         chain_size = controller.server.get_message("/device/chain/size")
         if chain_size:
             chain_size = int(chain_size)
-            # Maximum of 8 siblings can be accessed via OSC
-            max_siblings = min(chain_size, 8)
+            # Query beyond 8, stop after a run of missing slots.
+            max_siblings = min(chain_size, 256)
 
             for i in range(1, max_siblings + 1):
                 sibling_name = controller.server.get_message(
@@ -619,6 +642,8 @@ def _read_device_siblings_resource(controller: BitwigOSCController) -> str:
                         sibling_info.append(f"    Bypassed: {bool(sibling_bypassed)}")
 
                     siblings_info.append("\n".join(sibling_info))
+                elif i > 16 and len(siblings_info) > 2:
+                    break
 
     if len(siblings_info) > 2:  # More than just the headers
         return "\n".join(siblings_info)
@@ -649,8 +674,9 @@ def _read_device_layers_resource(controller: BitwigOSCController) -> str:
         layers_count = controller.server.get_message("/device/layer/exists")
 
         if layers_count:
-            # Maximum of 8 layers can be accessed via OSC
-            for i in range(1, 9):
+            for i in _collect_existing_slots(
+                controller, "/device/layer/{i}/exists", max_slots=256, stop_after_missing=32
+            ):
                 layer_exists = controller.server.get_message(
                     f"/device/layer/{i}/exists"
                 )

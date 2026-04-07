@@ -5,6 +5,8 @@ A Python library and server implementation for integrating
 Bitwig Studio with the Model Context Protocol (MCP).
 """
 
+__version__ = "0.0.3"
+
 from .app import main
 from .mcp.server import BitwigMCPServer
 from .settings import Settings, get_settings

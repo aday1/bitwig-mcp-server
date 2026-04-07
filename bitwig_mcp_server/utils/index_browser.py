@@ -19,6 +19,7 @@ import os
 import sys
 import traceback
 
+from bitwig_mcp_server.paths import browser_index_persistent_dir
 from bitwig_mcp_server.utils.browser_indexer import BitwigBrowserIndexer, build_index
 
 
@@ -32,10 +33,8 @@ logging.basicConfig(
 # Set up the logger for this module
 logger = logging.getLogger(__name__)
 
-# Default data directory
-DEFAULT_DATA_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "browser_index"
-)
+# Default data directory (same as MCP semantic search tools)
+DEFAULT_DATA_DIR = browser_index_persistent_dir()
 
 
 async def perform_search(
@@ -90,7 +89,7 @@ async def perform_search(
     return results
 
 
-async def main():
+async def async_main():
     """Main function to handle command-line arguments."""
     parser = argparse.ArgumentParser(
         description="Bitwig Browser Indexer and Search Tool",
@@ -322,5 +321,10 @@ Examples:
         sys.exit(1)
 
 
+def main():
+    """Console-script entry point for bitwig-browser-index."""
+    asyncio.run(async_main())
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

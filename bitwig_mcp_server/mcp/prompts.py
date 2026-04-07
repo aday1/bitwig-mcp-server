@@ -59,6 +59,19 @@ class BitwigPrompts:
                     ),
                 ],
             ),
+            Prompt(
+                name="start_creating_music",
+                description=(
+                    "Workflow to start making music in Bitwig via MCP (tracks, devices, clips, MIDI)"
+                ),
+                arguments=[
+                    PromptArgument(
+                        name="style",
+                        description="Optional genre or vibe (e.g. minimal techno, hip hop)",
+                        required=False,
+                    )
+                ],
+            ),
         ]
 
     @staticmethod
@@ -129,6 +142,34 @@ Can you help me:
 4. Propose a step-by-step approach to fix the issue
 
 Please give me detailed settings I can try.""",
+                    ),
+                )
+            ]
+
+        elif name == "start_creating_music":
+            style = arguments.get("style", "your chosen style")
+            return [
+                PromptMessage(
+                    role=Role.USER,
+                    content=TextContent(
+                        type="text",
+                        text=f"""I want to start making music in Bitwig Studio using the Bitwig MCP tools and the Open Sound Controller (DrivenByMoss) OSC extension.
+
+Target vibe: {style}.
+
+Please drive Bitwig with the MCP tools in a sensible order:
+
+1. set_layout to arrange when working on timeline/launcher; use mix for levels.
+2. set_tempo for BPM.
+3. add_instrument_track (and add_audio_track if needed). select_track on the bank index I care about; use navigate_track_bank if tracks are off the current OSC bank page.
+4. set_track_name for Kick, Bass, etc.
+5. browse_insert_device or device_browser_workflow to load built-in instruments (after selecting the first device slot on that track in Bitwig if needed).
+6. Clips: insert_seed_midi_clip for built-in MIDI (bars=8 for 8-bar clips; drums_all_in_one_gm_8bar needs Drum Machine on that track). Long chord stacks in seeds (organ_plenum, pad, fugue_organ) sound organ-like on any sustained synth; use different devices per role (bass vs chords vs lead). Many 8-bar seeds now send CC1 (mod wheel) and CC11 (expression); map those on the instrument for motion. LAUNCHER vs TIMELINE: launcher_clip_* is the scene grid; arranger uses clip_create_at_cursor or record. send_midi_note / play_midi_note_sequence; clip_quantize_selected when done.
+7. Mix: song_enhance_mix, set_track_send, set_project_remote_control (map remotes in Bitwig first); set_track_mute_state / solo; set_device_parameter; open_track_device_browser for Polymer, Polysynth, Sampler, Drum Machine, Organ only where appropriate.
+
+Remind me: OSC track and clip indices are bank-relative (often 1-8 unless I increased bank page size in Bitwig). Virtual MIDI requires the MIDI input port configured in the OSC extension.
+
+Build a minimal first idea (a few tracks, one clip pattern, basic levels) using these tools.""",
                     ),
                 )
             ]

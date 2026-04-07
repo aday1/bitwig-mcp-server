@@ -32,6 +32,7 @@ class BitwigOSCController:
         receive_port: int = 9000,
         connection_timeout: float = 10.0,  # Increased timeout for Bitwig operations
         reconnect_attempts: int = 5,  # More reconnection attempts
+        osc_bank_page_size: int = 64,
     ):
         """Initialize the controller
 
@@ -41,6 +42,7 @@ class BitwigOSCController:
             receive_port: Port to receive messages on
             connection_timeout: Timeout for initial connection in seconds
             reconnect_attempts: Number of reconnection attempts
+            osc_bank_page_size: Max /track/{n} index for OSC (patched DrivenByMoss default 64)
         """
         self.ip = ip
         self.send_port = send_port
@@ -49,7 +51,9 @@ class BitwigOSCController:
         self.reconnect_attempts = reconnect_attempts
 
         # Create client and server
-        self.client = BitwigOSCClient(ip, send_port)
+        self.client = BitwigOSCClient(
+            ip, send_port, osc_bank_page_size=osc_bank_page_size
+        )
         self.server = BitwigOSCServer(ip, receive_port)
 
         # Create error handler
@@ -68,6 +72,7 @@ class BitwigOSCController:
             ConnectionError: If unable to connect to Bitwig
         """
         try:
+            self.connection_attempts = 0
             # Start the OSC server
             self.server.start()
 
@@ -108,34 +113,30 @@ class BitwigOSCController:
             ConnectionError: If unable to connect to Bitwig
             TimeoutError: If connection times out
         """
-        start_time = time.time()
-        self.connection_attempts += 1
-
-        # Send ping to check if Bitwig is responding
         try:
-            # Request initial state from Bitwig
-            self.client.refresh()
-
-            # Wait for a response with timeout
-            while time.time() - start_time < self.connection_timeout:
-                # Check if we've received any messages
-                if self.server.received_messages:
-                    return
-
-                # Wait a bit before checking again
-                time.sleep(0.1)
-
-            # If we get here, we timed out
-            if self.connection_attempts < self.reconnect_attempts:
+            while self.connection_attempts < self.reconnect_attempts:
+                self.connection_attempts += 1
+                self.server.clear_messages()
+                start_time = time.time()
+                # Bitwig often needs an explicit refresh burst before it sends state.
+                self.client.refresh()
+                time.sleep(0.15)
+                self.client.refresh()
+                while time.time() - start_time < self.connection_timeout:
+                    if self.server.received_messages:
+                        return
+                    time.sleep(0.1)
                 logger.warning(
-                    f"Connection attempt {self.connection_attempts} timed out, retrying..."
+                    "Connection attempt %s/%s timed out waiting for OSC from Bitwig",
+                    self.connection_attempts,
+                    self.reconnect_attempts,
                 )
-                return self._connect_with_timeout()
-
             raise TimeoutError("connect", self.connection_timeout)
 
         except socket.error as e:
             raise ConnectionError(details=f"Socket error: {e}")
+        except TimeoutError:
+            raise
         except Exception as e:
             raise ConnectionError(details=str(e))
 
@@ -414,8 +415,9 @@ class BitwigOSCController:
 
         params = []
 
-        # Find all parameters
-        for i in range(1, 9):  # Assuming 8 parameters max
+        # Find all parameters within configured OSC bank/page size.
+        max_params = max(8, int(getattr(self.client, "osc_bank_page_size", 64)))
+        for i in range(1, max_params + 1):
             prefix = f"/device/param/{i}/"
             param_exists = self.server.get_message(f"{prefix}exists")
 

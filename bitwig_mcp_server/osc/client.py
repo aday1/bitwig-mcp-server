@@ -17,7 +17,7 @@ from .exceptions import (
 
 logger = logging.getLogger(__name__)
 
-# Default OSC settings (matching Bitwig/git-moss defaults)
+# Default OSC settings (matching patched DrivenByMoss defaults)
 DEFAULT_BITWIG_IP = "127.0.0.1"
 DEFAULT_SEND_PORT = 8000  # Port Bitwig listens on
 
@@ -25,12 +25,20 @@ DEFAULT_SEND_PORT = 8000  # Port Bitwig listens on
 class BitwigOSCClient:
     """Client for sending OSC messages to Bitwig Studio"""
 
-    def __init__(self, ip: str = DEFAULT_BITWIG_IP, port: int = DEFAULT_SEND_PORT):
+    def __init__(
+        self,
+        ip: str = DEFAULT_BITWIG_IP,
+        port: int = DEFAULT_SEND_PORT,
+        *,
+        osc_bank_page_size: int = 64,
+    ):
         """Initialize the OSC client
 
         Args:
             ip: The IP address of the Bitwig instance
             port: The port Bitwig is listening on for OSC messages
+            osc_bank_page_size: Bitwig OSC bank page size (default 64). Track and clip slot
+                indices in OSC are relative to the visible bank; index must be in 1..this value.
 
         Raises:
             ConnectionError: If unable to create the UDP client
@@ -38,6 +46,11 @@ class BitwigOSCClient:
         try:
             self.ip = ip
             self.port = port
+            if not isinstance(osc_bank_page_size, int) or osc_bank_page_size < 1:
+                raise InvalidParameterError(
+                    "osc_bank_page_size", osc_bank_page_size, "must be a positive integer"
+                )
+            self.osc_bank_page_size = min(osc_bank_page_size, 512)
             self.client = udp_client.SimpleUDPClient(ip, port)
             self.addr_log: List[str] = []  # Log of sent addresses for verification
         except socket.error as e:
@@ -103,6 +116,18 @@ class BitwigOSCClient:
         """
         self.send("/stop", 1)
 
+    def set_playhead_beats(self, beats: float) -> None:
+        """Move the transport play position (arranger timeline, in beats)."""
+        if not isinstance(beats, (int, float)):
+            raise InvalidParameterError("beats", beats, "must be a number")
+        if beats < 0:
+            raise InvalidParameterError("beats", beats, "must be non-negative")
+        self.send("/time", float(beats))
+
+    def start_arranger_record(self) -> None:
+        """Start recording in the arranger (prints clips on the timeline when armed)."""
+        self.send("/record", None)
+
     def set_tempo(self, bpm: float) -> None:
         """Set the tempo
 
@@ -142,15 +167,7 @@ class BitwigOSCClient:
             InvalidParameterError: If parameters are invalid
             ConnectionError: If unable to send the command
         """
-        if not isinstance(track_index, int):
-            raise InvalidParameterError(
-                "track_index", track_index, "must be an integer"
-            )
-
-        if track_index < 1:
-            raise InvalidParameterError(
-                "track_index", track_index, "must be at least 1 (1-based indexing)"
-            )
+        self._validate_track_bank_index(track_index)
 
         MAX_VALUE = 128
         MIN_VALUE = 0
@@ -178,15 +195,7 @@ class BitwigOSCClient:
             InvalidParameterError: If parameters are invalid
             ConnectionError: If unable to send the command
         """
-        if not isinstance(track_index, int):
-            raise InvalidParameterError(
-                "track_index", track_index, "must be an integer"
-            )
-
-        if track_index < 1:
-            raise InvalidParameterError(
-                "track_index", track_index, "must be at least 1 (1-based indexing)"
-            )
+        self._validate_track_bank_index(track_index)
 
         MAX_VALUE = 128
         MIN_VALUE = 0
@@ -217,15 +226,7 @@ class BitwigOSCClient:
             InvalidParameterError: If track_index is invalid
             ConnectionError: If unable to send the command
         """
-        if not isinstance(track_index, int):
-            raise InvalidParameterError(
-                "track_index", track_index, "must be an integer"
-            )
-
-        if track_index < 1:
-            raise InvalidParameterError(
-                "track_index", track_index, "must be at least 1 (1-based indexing)"
-            )
+        self._validate_track_bank_index(track_index)
 
         self.send(f"/track/{track_index}/mute", None)
 
@@ -240,20 +241,104 @@ class BitwigOSCClient:
             InvalidParameterError: If parameters are invalid
             ConnectionError: If unable to send the command
         """
-        if not isinstance(track_index, int):
-            raise InvalidParameterError(
-                "track_index", track_index, "must be an integer"
-            )
-
-        if track_index < 1:
-            raise InvalidParameterError(
-                "track_index", track_index, "must be at least 1 (1-based indexing)"
-            )
+        self._validate_track_bank_index(track_index)
 
         if not isinstance(mute, bool):
             raise InvalidParameterError("mute", mute, "must be a boolean")
 
         self.send(f"/track/{track_index}/mute", 1 if mute else 0)
+
+    def _validate_track_bank_index(self, track_index: int) -> None:
+        if not isinstance(track_index, int):
+            raise InvalidParameterError(
+                "track_index", track_index, "must be an integer"
+            )
+        mx = self.osc_bank_page_size
+        if track_index < 1 or track_index > mx:
+            raise InvalidParameterError(
+                "track_index",
+                track_index,
+                f"must be between 1 and {mx} (OSC bank page; Bitwig errors with "
+                f"'Index {mx} out of bounds for length {mx}' if you use {mx + 1}+). "
+                "Call navigate_track_bank with page true to scroll the bank, or set "
+                "BITWIG_MCP_OSC_BANK_PAGE_SIZE to match Bitwig's OSC bank size.",
+            )
+
+    def add_track_instrument(self) -> None:
+        """Add a new instrument track (Bitwig Open Controller OSC)."""
+        self.send("/track/add/instrument", None)
+
+    def add_track_audio(self) -> None:
+        """Add a new audio track."""
+        self.send("/track/add/audio", None)
+
+    def add_track_effect(self) -> None:
+        """Add a new effect track."""
+        self.send("/track/add/effect", None)
+
+    def select_track(self, track_index: int) -> None:
+        """Select a track in the current OSC track bank (1-based)."""
+        self._validate_track_bank_index(track_index)
+        self.send(f"/track/{track_index}/select", 1)
+
+    def navigate_track_selection(self, direction: str) -> None:
+        """Move selection to next/previous track in the bank."""
+        if direction not in ["next", "previous"]:
+            raise InvalidParameterError(
+                "direction", direction, "must be 'next' or 'previous'"
+            )
+        sym = "+" if direction == "next" else "-"
+        self.send(f"/track/{sym}", None)
+
+    def navigate_track_bank(self, direction: str, *, page: bool = False) -> None:
+        """Scroll the track bank by one track or by one page (osc_bank_page_size tracks)."""
+        if direction not in ["next", "previous"]:
+            raise InvalidParameterError(
+                "direction", direction, "must be 'next' or 'previous'"
+            )
+        sym = "+" if direction == "next" else "-"
+        if page:
+            self.send(f"/track/bank/page/{sym}", None)
+        else:
+            self.send(f"/track/bank/{sym}", None)
+
+    def toggle_track_bank_mode(self) -> None:
+        """Toggle between audio/instrument bank and effect track bank."""
+        self.send("/track/toggleBank", None)
+
+    def set_track_name(self, track_index: int, name: str) -> None:
+        self._validate_track_bank_index(track_index)
+        if not isinstance(name, str):
+            raise InvalidParameterError("name", name, "must be a string")
+        self.send(f"/track/{track_index}/name", name)
+
+    def set_track_record_arm(self, track_index: int, armed: bool) -> None:
+        self._validate_track_bank_index(track_index)
+        if not isinstance(armed, bool):
+            raise InvalidParameterError("armed", armed, "must be a boolean")
+        self.send(f"/track/{track_index}/recarm", 1 if armed else 0)
+
+    def set_track_solo(self, track_index: int, solo: bool) -> None:
+        self._validate_track_bank_index(track_index)
+        if not isinstance(solo, bool):
+            raise InvalidParameterError("solo", solo, "must be a boolean")
+        self.send(f"/track/{track_index}/solo", 1 if solo else 0)
+
+    def duplicate_track(self, track_index: int) -> None:
+        self._validate_track_bank_index(track_index)
+        self.send(f"/track/{track_index}/duplicate", None)
+
+    def remove_track(self, track_index: int) -> None:
+        self._validate_track_bank_index(track_index)
+        self.send(f"/track/{track_index}/remove", None)
+
+    def set_layout(self, layout: str) -> None:
+        """Switch Bitwig layout: arrange, mix, or edit."""
+        if layout not in ("arrange", "mix", "edit"):
+            raise InvalidParameterError(
+                "layout", layout, "must be 'arrange', 'mix', or 'edit'"
+            )
+        self.send(f"/layout/{layout}", None)
 
     # Device controls
     def set_device_parameter(self, param_index: int, value: float) -> None:
@@ -277,8 +362,11 @@ class BitwigOSCClient:
                 "param_index", param_index, "must be at least 1 (1-based indexing)"
             )
 
-        if param_index > 8:
-            raise InvalidParameterError("param_index", param_index, "must be at most 8")
+        mx = self.osc_bank_page_size
+        if param_index > mx:
+            raise InvalidParameterError(
+                "param_index", param_index, f"must be at most {mx}"
+            )
 
         MAX_VALUE = 128
         MIN_VALUE = 0
@@ -298,6 +386,25 @@ class BitwigOSCClient:
             value = MAX_VALUE
 
         self.send(f"/device/param/{param_index}/value", value)
+
+    def set_device_parameter_touched(self, param_index: int, touched: bool) -> None:
+        """Tell Bitwig the device parameter is touched/released (needed for Latch/Touch automation write)."""
+        if not isinstance(param_index, int):
+            raise InvalidParameterError(
+                "param_index", param_index, "must be an integer"
+            )
+        if param_index < 1:
+            raise InvalidParameterError(
+                "param_index", param_index, "must be at least 1 (1-based indexing)"
+            )
+        mx = self.osc_bank_page_size
+        if param_index > mx:
+            raise InvalidParameterError(
+                "param_index", param_index, f"must be at most {mx}"
+            )
+        if not isinstance(touched, bool):
+            raise InvalidParameterError("touched", touched, "must be a boolean")
+        self.send(f"/device/param/{param_index}/touched", 1 if touched else 0)
 
     def toggle_device_bypass(self) -> None:
         """Toggle bypass state of the currently selected device
@@ -710,6 +817,370 @@ class BitwigOSCClient:
 
         # Commit selection
         self.commit_browser_selection()
+
+    def _validate_send_index(self, send_index: int) -> None:
+        if not isinstance(send_index, int) or send_index < 1 or send_index > 8:
+            raise InvalidParameterError(
+                "send_index", send_index, "must be between 1 and 8 (OSC)"
+            )
+
+    def _validate_project_param_index(self, index: int) -> None:
+        if not isinstance(index, int) or index < 1 or index > 8:
+            raise InvalidParameterError(
+                "project_param_index", index, "must be between 1 and 8 (OSC)"
+            )
+
+    def toggle_mixer_sends_section(self) -> None:
+        """Toggle visibility of sends column in Mixer layout (OSC)."""
+        self.send("/mixer/sendsSectionVisibility", None)
+
+    def enable_track_send(self, track_index: int, send_index: int) -> None:
+        """Enable a track send (OSC: activated with value 1)."""
+        self._validate_track_bank_index(track_index)
+        self._validate_send_index(send_index)
+        self.send(f"/track/{track_index}/send/{send_index}/activated", 1)
+
+    def set_track_send_volume(self, track_index: int, send_index: int, value: float) -> None:
+        """Set track send level (0-MAX_VALUE, typically 0-128 in Moss OSC)."""
+        self._validate_track_bank_index(track_index)
+        self._validate_send_index(send_index)
+        self.send(f"/track/{track_index}/send/{send_index}/volume", float(value))
+
+    def set_project_remote_control_value(self, param_index: int, value: float) -> None:
+        """Set one of the 8 Bitwig project remote controls (mixer macro-style)."""
+        self._validate_project_param_index(param_index)
+        self.send(f"/project/param/{param_index}/value", float(value))
+
+    def open_track_device_browser(self, track_index: int, position: str = "after") -> None:
+        """Select track and open device browser to insert before/after selected device."""
+        self.refresh()
+        self.select_track(track_index)
+        self.browse_for_device(position)
+
+    # --- Clip launcher, scenes, MIDI (DrivenByMoss / Bitwig Open Controller OSC) ---
+    # Track/slot indices address the OSC bank page (default 8; increase in Bitwig OSC prefs).
+
+    def _validate_osc_bank_index(self, value: int, name: str) -> None:
+        if not isinstance(value, int):
+            raise InvalidParameterError(name, value, "must be an integer")
+        mx = self.osc_bank_page_size
+        if value < 1 or value > mx:
+            raise InvalidParameterError(
+                name,
+                value,
+                f"must be between 1 and {mx} (OSC bank page). "
+                "Use navigate_track_bank to show other project tracks, or increase "
+                "BITWIG_MCP_OSC_BANK_PAGE_SIZE if Bitwig's OSC bank size is larger.",
+            )
+
+    def send_midi_note(self, channel: int, note: int, velocity: int) -> None:
+        """Inject a MIDI note via virtual keyboard (velocity 0 = note off)."""
+        if not isinstance(channel, int) or channel < 1 or channel > 16:
+            raise InvalidParameterError(
+                "channel", channel, "must be between 1 and 16"
+            )
+        if not isinstance(note, int) or note < 0 or note > 127:
+            raise InvalidParameterError("note", note, "must be between 0 and 127")
+        if not isinstance(velocity, int) or velocity < 0 or velocity > 127:
+            raise InvalidParameterError(
+                "velocity", velocity, "must be between 0 and 127"
+            )
+        self.send(f"/vkb_midi/{channel}/note/{note}", velocity)
+
+    def send_midi_drum(self, channel: int, note: int, velocity: int) -> None:
+        """Send a drum note on the virtual MIDI keyboard."""
+        if not isinstance(channel, int) or channel < 1 or channel > 16:
+            raise InvalidParameterError(
+                "channel", channel, "must be between 1 and 16"
+            )
+        if not isinstance(note, int) or note < 0 or note > 127:
+            raise InvalidParameterError("note", note, "must be between 0 and 127")
+        if not isinstance(velocity, int) or velocity < 0 or velocity > 127:
+            raise InvalidParameterError(
+                "velocity", velocity, "must be between 0 and 127"
+            )
+        self.send(f"/vkb_midi/{channel}/drum/{note}", velocity)
+
+    def send_midi_cc(self, channel: int, cc: int, value: int) -> None:
+        """Send a MIDI CC message through the virtual keyboard bridge."""
+        if not isinstance(channel, int) or channel < 1 or channel > 16:
+            raise InvalidParameterError(
+                "channel", channel, "must be between 1 and 16"
+            )
+        if not isinstance(cc, int) or cc < 0 or cc > 127:
+            raise InvalidParameterError("cc", cc, "must be between 0 and 127")
+        if not isinstance(value, int) or value < 0 or value > 127:
+            raise InvalidParameterError("value", value, "must be between 0 and 127")
+        self.send(f"/vkb_midi/{channel}/cc/{cc}", value)
+
+    def send_midi_program_change(self, channel: int, program: int) -> None:
+        """Send MIDI Program Change 0-127 via /vkb_midi/{ch}/program (DrivenByMoss fork with program case)."""
+        if not isinstance(channel, int) or channel < 1 or channel > 16:
+            raise InvalidParameterError(
+                "channel", channel, "must be between 1 and 16"
+            )
+        if not isinstance(program, int) or program < 0 or program > 127:
+            raise InvalidParameterError(
+                "program", program, "must be between 0 and 127"
+            )
+        self.send(f"/vkb_midi/{channel}/program", program)
+
+    def send_midi_aftertouch_poly(self, channel: int, note: int, pressure: int) -> None:
+        """Send poly aftertouch for one note."""
+        if not isinstance(channel, int) or channel < 1 or channel > 16:
+            raise InvalidParameterError(
+                "channel", channel, "must be between 1 and 16"
+            )
+        if not isinstance(note, int) or note < 0 or note > 127:
+            raise InvalidParameterError("note", note, "must be between 0 and 127")
+        if not isinstance(pressure, int) or pressure < 0 or pressure > 127:
+            raise InvalidParameterError(
+                "pressure", pressure, "must be between 0 and 127"
+            )
+        self.send(f"/vkb_midi/{channel}/aftertouch/{note}", pressure)
+
+    def send_midi_aftertouch_channel(self, channel: int, pressure: int) -> None:
+        """Send channel aftertouch."""
+        if not isinstance(channel, int) or channel < 1 or channel > 16:
+            raise InvalidParameterError(
+                "channel", channel, "must be between 1 and 16"
+            )
+        if not isinstance(pressure, int) or pressure < 0 or pressure > 127:
+            raise InvalidParameterError(
+                "pressure", pressure, "must be between 0 and 127"
+            )
+        self.send(f"/vkb_midi/{channel}/aftertouch", pressure)
+
+    def send_midi_pitchbend(self, channel: int, value: int) -> None:
+        """Send pitch bend value (0..127, center=64)."""
+        if not isinstance(channel, int) or channel < 1 or channel > 16:
+            raise InvalidParameterError(
+                "channel", channel, "must be between 1 and 16"
+            )
+        if not isinstance(value, int) or value < 0 or value > 127:
+            raise InvalidParameterError("value", value, "must be between 0 and 127")
+        self.send(f"/vkb_midi/{channel}/pitchbend", value)
+
+    def set_vkb_fixed_velocity(self, value: int) -> None:
+        """Set fixed velocity (0 disables, 1..127 enables)."""
+        if not isinstance(value, int) or value < 0 or value > 127:
+            raise InvalidParameterError("value", value, "must be between 0 and 127")
+        self.send("/vkb_midi/velocity", value)
+
+    def set_vkb_note_repeat_active(self, active: bool) -> None:
+        """Enable or disable note repeat."""
+        if not isinstance(active, bool):
+            raise InvalidParameterError("active", active, "must be a boolean")
+        self.send("/vkb_midi/noterepeat/isActive", 1 if active else 0)
+
+    def set_vkb_note_repeat_timing(self, period: str, length: str) -> None:
+        """Set note repeat period and length values."""
+        allowed = {"1/4", "1/4t", "1/8", "1/8t", "1/16", "1/16t", "1/32", "1/32t"}
+        if period not in allowed:
+            raise InvalidParameterError("period", period, f"must be one of {sorted(allowed)}")
+        if length not in allowed:
+            raise InvalidParameterError("length", length, f"must be one of {sorted(allowed)}")
+        self.send("/vkb_midi/noterepeat/period", period)
+        self.send("/vkb_midi/noterepeat/length", length)
+
+    def navigate_device_param_page(self, direction: str) -> None:
+        """Select next/previous device parameter page."""
+        if direction not in ["next", "previous"]:
+            raise InvalidParameterError(
+                "direction", direction, "must be either 'next' or 'previous'"
+            )
+        sym = "+" if direction == "next" else "-"
+        self.send(f"/device/param/{sym}", None)
+
+    def navigate_device_param_bank_page(self, direction: str) -> None:
+        """Select next/previous bank of 8 device pages."""
+        if direction not in ["next", "previous"]:
+            raise InvalidParameterError(
+                "direction", direction, "must be either 'next' or 'previous'"
+            )
+        sym = "+" if direction == "next" else "-"
+        self.send(f"/device/param/bank/page/{sym}", None)
+
+    def select_device_page_slot(self, page_slot: int) -> None:
+        """Select one of the currently visible device pages."""
+        mx = self.osc_bank_page_size
+        if not isinstance(page_slot, int) or page_slot < 1 or page_slot > mx:
+            raise InvalidParameterError(
+                "page_slot", page_slot, f"must be between 1 and {mx}"
+            )
+        self.send("/device/page/selected", page_slot)
+
+    def set_track_remote_parameter(
+        self, track_index: int, param_index: int, value: float
+    ) -> None:
+        """Set one of the selected track remote parameters (1..8)."""
+        self._validate_track_bank_index(track_index)
+        if not isinstance(param_index, int) or param_index < 1 or param_index > 8:
+            raise InvalidParameterError("param_index", param_index, "must be between 1 and 8")
+        if not isinstance(value, (int, float)) or value < 0 or value > 128:
+            raise InvalidParameterError("value", value, "must be between 0 and 128")
+        self.select_track(track_index)
+        self.send(f"/track/param/{param_index}/value", float(value))
+
+    def navigate_track_param_page(self, direction: str) -> None:
+        """Select next/previous track parameter page."""
+        if direction not in ["next", "previous"]:
+            raise InvalidParameterError(
+                "direction", direction, "must be either 'next' or 'previous'"
+            )
+        sym = "+" if direction == "next" else "-"
+        self.send(f"/track/param/{sym}", None)
+
+    def navigate_track_param_bank_page(self, direction: str) -> None:
+        """Select next/previous bank of 8 track parameter pages."""
+        if direction not in ["next", "previous"]:
+            raise InvalidParameterError(
+                "direction", direction, "must be either 'next' or 'previous'"
+            )
+        sym = "+" if direction == "next" else "-"
+        self.send(f"/track/param/bank/page/{sym}", None)
+
+    def select_track_page_slot(self, page_slot: int) -> None:
+        """Select one of the currently visible 8 track pages."""
+        if not isinstance(page_slot, int) or page_slot < 1 or page_slot > 8:
+            raise InvalidParameterError("page_slot", page_slot, "must be between 1 and 8")
+        self.send("/track/page/selected", page_slot)
+
+    def set_last_touched_device_parameter(self, value: float) -> None:
+        """Set value of last hovered/clicked parameter."""
+        if not isinstance(value, (int, float)) or value < 0 or value > 128:
+            raise InvalidParameterError("value", value, "must be between 0 and 128")
+        self.send("/device/lastparam/value", float(value))
+
+    def reset_last_touched_device_parameter(self) -> None:
+        """Reset last hovered/clicked parameter to default."""
+        self.send("/device/lastparam/reset", None)
+
+    def set_last_touched_device_parameter_touched(self, touched: bool) -> None:
+        """Set touched state for the last hovered/clicked parameter."""
+        if not isinstance(touched, bool):
+            raise InvalidParameterError("touched", touched, "must be a boolean")
+        self.send("/device/lastparam/touched", 1 if touched else 0)
+
+    def launcher_clip_select(self, track_index: int, slot_index: int) -> None:
+        self._validate_osc_bank_index(track_index, "track_index")
+        self._validate_osc_bank_index(slot_index, "slot_index")
+        self.send(f"/track/{track_index}/clip/{slot_index}/select", None)
+
+    def prepare_launcher_clip_slot(self, track_index: int, slot_index: int) -> None:
+        """Sync Bitwig focus: refresh, select track, then select launcher slot (needed for reliable clips)."""
+        self.refresh()
+        self.select_track(track_index)
+        self.launcher_clip_select(track_index, slot_index)
+
+    def toggle_arranger_clip_launcher_visible(self) -> None:
+        """Toggle clip launcher strip visibility in Arrange layout (run twice if it was hidden)."""
+        self.send("/arranger/clipLauncherSectionVisibility", None)
+
+    def launcher_clip_create(
+        self, track_index: int, slot_index: int, length_beats: float
+    ) -> None:
+        """Create a new clip, enable overdub, and start (length in quarter notes)."""
+        self._validate_osc_bank_index(track_index, "track_index")
+        self._validate_osc_bank_index(slot_index, "slot_index")
+        if not isinstance(length_beats, (int, float)) or length_beats <= 0:
+            raise InvalidParameterError(
+                "length_beats", length_beats, "must be a positive number"
+            )
+        self.send(f"/track/{track_index}/clip/{slot_index}/create", float(length_beats))
+
+    def launcher_clip_launch(
+        self, track_index: int, slot_index: int, launch: bool
+    ) -> None:
+        self._validate_osc_bank_index(track_index, "track_index")
+        self._validate_osc_bank_index(slot_index, "slot_index")
+        if not isinstance(launch, bool):
+            raise InvalidParameterError("launch", launch, "must be a boolean")
+        self.send(
+            f"/track/{track_index}/clip/{slot_index}/launch", 1 if launch else 0
+        )
+
+    def launcher_clip_record(self, track_index: int, slot_index: int) -> None:
+        self._validate_osc_bank_index(track_index, "track_index")
+        self._validate_osc_bank_index(slot_index, "slot_index")
+        self.send(f"/track/{track_index}/clip/{slot_index}/record", None)
+
+    def launcher_clip_remove(self, track_index: int, slot_index: int) -> None:
+        self._validate_osc_bank_index(track_index, "track_index")
+        self._validate_osc_bank_index(slot_index, "slot_index")
+        self.send(f"/track/{track_index}/clip/{slot_index}/remove", None)
+
+    def launcher_clip_duplicate(self, track_index: int, slot_index: int) -> None:
+        self._validate_osc_bank_index(track_index, "track_index")
+        self._validate_osc_bank_index(slot_index, "slot_index")
+        self.send(f"/track/{track_index}/clip/{slot_index}/duplicate", None)
+
+    def launcher_clip_insert_file(
+        self, track_index: int, slot_index: int, filepath: str
+    ) -> None:
+        self._validate_osc_bank_index(track_index, "track_index")
+        self._validate_osc_bank_index(slot_index, "slot_index")
+        if not isinstance(filepath, str) or not filepath.strip():
+            raise InvalidParameterError("filepath", filepath, "must be a non-empty string")
+        self.send(f"/track/{track_index}/clip/{slot_index}/insertFile", filepath)
+
+    def launcher_track_stop(self, track_index: int) -> None:
+        self._validate_osc_bank_index(track_index, "track_index")
+        self.send(f"/track/{track_index}/clip/stop", None)
+
+    def launcher_track_return_to_arrangement(self, track_index: int) -> None:
+        self._validate_osc_bank_index(track_index, "track_index")
+        self.send(f"/track/{track_index}/clip/returntoarrangement", None)
+
+    def clips_stop_all(self) -> None:
+        self.send("/clip/stopall", None)
+
+    def clip_create_at_cursor(self, length_beats: float) -> None:
+        if not isinstance(length_beats, (int, float)) or length_beats <= 0:
+            raise InvalidParameterError(
+                "length_beats", length_beats, "must be a positive number"
+            )
+        self.send("/clip/create", float(length_beats))
+
+    def clip_quantize_selected(self) -> None:
+        self.send("/clip/quantize", None)
+
+    def clip_set_name_selected(self, name: str) -> None:
+        if not isinstance(name, str):
+            raise InvalidParameterError("name", name, "must be a string")
+        self.send("/clip/name", name)
+
+    def toggle_clip_launcher_overdub(self) -> None:
+        self.send("/overdub/launcher", None)
+
+    def toggle_arranger_overdub(self) -> None:
+        self.send("/overdub", None)
+
+    def toggle_write_arranger_automation(self) -> None:
+        """Toggle arranger automation write (same as Bitwig transport autowrite button)."""
+        self.send("/autowrite", None)
+
+    def toggle_write_launcher_automation(self) -> None:
+        """Toggle clip-launcher automation write."""
+        self.send("/autowrite/launcher", None)
+
+    def set_automation_write_mode(self, mode: str) -> None:
+        """Set automation write mode (DrivenByMoss OSC /automationWriteMode).
+
+        Bitwig expects enum names like LATCH, TOUCH, WRITE, READ, TRIM_READ, LATCH_PREVIEW.
+        """
+        if not isinstance(mode, str) or not mode.strip():
+            raise InvalidParameterError("mode", mode, "must be a non-empty string")
+        self.send("/automationWriteMode", mode.strip())
+
+    def scene_add(self) -> None:
+        self.send("/scene/add", None)
+
+    def scene_launch(self, scene_index: int, launch: bool) -> None:
+        self._validate_osc_bank_index(scene_index, "scene_index")
+        if not isinstance(launch, bool):
+            raise InvalidParameterError("launch", launch, "must be a boolean")
+        self.send(f"/scene/{scene_index}/launch", 1 if launch else 0)
 
     def get_status(self) -> Dict[str, Any]:
         """Get client status information

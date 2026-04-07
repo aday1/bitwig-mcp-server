@@ -18,6 +18,7 @@ def mock_osc_controller():
     controller.ready = True
     controller.start = MagicMock()
     controller.stop = MagicMock()
+    controller.ping = MagicMock(return_value=True)
     return controller
 
 
@@ -74,6 +75,12 @@ def bitwig_mcp_server(mock_osc_controller, mock_mcp_server):
 @pytest.mark.asyncio
 async def test_start_server(bitwig_mcp_server, mock_osc_controller):
     """Test starting the server."""
+    mock_osc_controller.ready = False
+
+    def mark_ready() -> None:
+        mock_osc_controller.ready = True
+
+    mock_osc_controller.start.side_effect = mark_ready
     await bitwig_mcp_server.start()
     mock_osc_controller.start.assert_called_once()
 
@@ -93,6 +100,23 @@ async def test_list_tools(bitwig_mcp_server):
     ):
         tools = await bitwig_mcp_server.list_tools()
         assert tools == ["tool1", "tool2"]
+
+
+@pytest.mark.asyncio
+async def test_build_browser_index_tool(bitwig_mcp_server, mock_osc_controller):
+    """build_browser_index stops OSC, runs sync build, restarts OSC."""
+    with patch(
+        "bitwig_mcp_server.utils.index_runner.run_browser_index_build_sync",
+        return_value=(True, "Indexed 3 browser items into /tmp/x"),
+    ) as mock_run:
+        result = await bitwig_mcp_server.call_tool(
+            "build_browser_index", {"clear": False}
+        )
+        mock_osc_controller.stop.assert_called()
+        mock_osc_controller.start.assert_called()
+        mock_run.assert_called_once_with(None, False)
+        assert "Success." in result[0].text
+        assert "Indexed 3" in result[0].text
 
 
 @pytest.mark.asyncio

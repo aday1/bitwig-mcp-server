@@ -33,7 +33,8 @@ class TestBitwigOSCController(unittest.TestCase):
         # Test start
         self.controller.start()
         self.mock_server.start.assert_called_once()
-        self.mock_client.refresh.assert_called_once()
+        self.mock_server.clear_messages.assert_called()
+        self.assertGreaterEqual(self.mock_client.refresh.call_count, 2)
         self.assertTrue(self.controller.ready)
 
         # Test stop

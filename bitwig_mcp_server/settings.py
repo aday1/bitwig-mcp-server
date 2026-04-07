@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -52,19 +52,37 @@ class Settings(BaseSettings):
     bitwig_receive_port: int = Field(
         default=9000, description="Port to receive OSC messages from Bitwig"
     )
+    osc_bank_page_size: int = Field(
+        default=64,
+        ge=1,
+        le=512,
+        description=(
+            "Max track_index and slot_index for OSC clip/track commands; should match Bitwig "
+            "OSC extension track bank/page size (default 64 in patched DrivenByMoss). Higher project tracks: "
+            "navigate_track_bank with page true, then use 1..this value."
+        ),
+    )
 
     # MCP settings
     mcp_port: int = Field(
         default=8080, description="Port for MCP server HTTP/SSE transport"
     )
+    monitor_enabled: bool = Field(
+        default=True, description="Enable local MCP activity monitor webpage"
+    )
+    monitor_host: str = Field(
+        default="127.0.0.1", description="Host for local monitor webpage"
+    )
+    monitor_port: int = Field(
+        default=8765, description="Port for local monitor webpage"
+    )
 
-    class Config:
-        """Configuration for settings behavior."""
-
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        env_prefix = "BITWIG_MCP_"
-        case_sensitive = False
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_prefix="BITWIG_MCP_",
+        case_sensitive=False,
+    )
 
     @field_validator("log_level")
     def validate_log_level(cls, v: str) -> str:
@@ -117,7 +135,7 @@ class Settings(BaseSettings):
         Returns:
             Path to the .env file if it exists, None otherwise
         """
-        env_file = self.root_dir / self.Config.env_file
+        env_file = self.root_dir / ".env"
         return env_file if env_file.exists() else None
 
 

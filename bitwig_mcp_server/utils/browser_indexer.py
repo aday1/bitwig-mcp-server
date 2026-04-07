@@ -22,7 +22,9 @@ from bs4 import BeautifulSoup
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 
+from bitwig_mcp_server.paths import browser_index_persistent_dir
 from bitwig_mcp_server.osc.controller import BitwigOSCController
+from bitwig_mcp_server.settings import get_settings
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -62,12 +64,7 @@ class BitwigBrowserIndexer:
             collection_name: Name of the ChromaDB collection to store the device data
         """
         if persistent_dir is None:
-            # Use the data directory in the project by default
-            persistent_dir = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                "data",
-                "browser_index",
-            )
+            persistent_dir = browser_index_persistent_dir()
 
         self.persistent_dir = Path(persistent_dir)
         self.embedding_model_name = embedding_model
@@ -130,7 +127,20 @@ class BitwigBrowserIndexer:
             if self.controller is None:
                 logger.info("Creating OSC controller...")
                 try:
-                    self.controller = BitwigOSCController()
+                    osc = get_settings()
+                    self.controller = BitwigOSCController(
+                        osc.bitwig_host,
+                        osc.bitwig_send_port,
+                        osc.bitwig_receive_port,
+                        osc_bank_page_size=osc.osc_bank_page_size,
+                    )
+                    logger.info(
+                        "OSC target %s:%s listen %s:%s (set BITWIG_MCP_BITWIG_* to override)",
+                        osc.bitwig_host,
+                        osc.bitwig_send_port,
+                        osc.bitwig_host,
+                        osc.bitwig_receive_port,
+                    )
                 except Exception as e:
                     logger.error(f"Failed to create OSC controller: {e}")
                     logger.error(
@@ -210,7 +220,9 @@ class BitwigBrowserIndexer:
                         "Failed to connect to Bitwig Studio after multiple attempts. Please check if:"
                         "\n1. Bitwig Studio is running with a project open"
                         "\n2. The OSC Controller extension is enabled in Bitwig settings"
-                        "\n3. The correct ports are configured (8000 for sending to Bitwig, 9000 for receiving)"
+                        "\n3. Bitwig must send OSC to this machine on the SAME port the indexer listens on "
+                        "(default receive 9000). Match Bitwig's 'send port' / remote port to BITWIG_MCP_BITWIG_RECEIVE_PORT."
+                        "\n4. Stop other tools that bind UDP 9000 (only one listener), or change BITWIG_MCP_BITWIG_RECEIVE_PORT."
                     )
                     return False
 
@@ -262,9 +274,11 @@ class BitwigBrowserIndexer:
             A string representation for semantic search
         """
         metadata = device.metadata
-        tags_text = metadata.get(
-            "tags", ""
-        )  # Tags are already a comma-separated string
+        raw_tags = metadata.get("tags", "") or ""
+        if isinstance(raw_tags, list):
+            tags_text = ", ".join(str(t) for t in raw_tags)
+        else:
+            tags_text = raw_tags
         description = metadata.get("description", "")
 
         # Create a text representation that focuses on what the device does
@@ -1440,7 +1454,10 @@ class BitwigBrowserIndexer:
             logger.info("=" * 60)
             logger.info(f"Successfully indexed {total_added} browser items")
             logger.info(f"Total indexing time: {total_time:.1f}s")
-            logger.info(f"Average rate: {total_added/total_time:.2f} items/s")
+            if total_time > 0:
+                logger.info(f"Average rate: {total_added/total_time:.2f} items/s")
+            else:
+                logger.info("Average rate: n/a (elapsed time under measurable resolution)")
             logger.info("=" * 60)
 
         except Exception as e:
@@ -1708,13 +1725,8 @@ async def build_index(persistent_dir: str = None, existing_controller=None):
     Returns:
         BitwigBrowserIndexer instance or None if the indexing failed
     """
-    # If no directory specified, use the project data directory
     if persistent_dir is None:
-        persistent_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "data",
-            "browser_index",
-        )
+        persistent_dir = browser_index_persistent_dir()
 
     # Ensure directory exists
     os.makedirs(persistent_dir, exist_ok=True)
@@ -1872,13 +1884,8 @@ async def enhance_index_with_descriptions(persistent_dir: str = None):
     Returns:
         Number of devices that were enhanced with descriptions
     """
-    # If no directory specified, use the project data directory
     if persistent_dir is None:
-        persistent_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "data",
-            "browser_index",
-        )
+        persistent_dir = browser_index_persistent_dir()
 
     logger.info("=" * 80)
     logger.info("Starting index enhancement process")

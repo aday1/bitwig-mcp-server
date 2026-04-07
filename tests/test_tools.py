@@ -2,7 +2,8 @@
 Tests for the Bitwig MCP Server tools module.
 """
 
-from unittest.mock import MagicMock
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -20,10 +21,55 @@ def test_get_bitwig_tools():
     expected_core_names = {
         # Basic transport and track tools
         "transport_play",
+        "transport_stop",
+        "set_playhead_beats",
+        "start_arranger_record",
         "set_tempo",
         "set_track_volume",
         "set_track_pan",
         "toggle_track_mute",
+        "add_instrument_track",
+        "add_audio_track",
+        "add_effect_track",
+        "select_track",
+        "navigate_track_selection",
+        "navigate_track_bank",
+        "toggle_track_bank_mode",
+        "set_track_name",
+        "set_track_record_arm",
+        "set_track_solo",
+        "duplicate_track",
+        "remove_track",
+        "set_layout",
+        "toggle_mixer_sends_section",
+        "set_track_send",
+        "set_project_remote_control",
+        "open_track_device_browser",
+        "song_enhance_mix",
+        "set_track_mute_state",
+        "send_midi_note",
+        "send_midi_drum",
+        "play_midi_note_sequence",
+        "launcher_clip_select",
+        "launcher_clip_create",
+        "launcher_clip_launch",
+        "launcher_clip_record",
+        "launcher_clip_remove",
+        "launcher_clip_duplicate",
+        "launcher_clip_insert_file",
+        "launcher_track_stop",
+        "launcher_track_return_to_arrangement",
+        "clips_stop_all",
+        "clip_create_at_cursor",
+        "clip_quantize_selected",
+        "clip_set_name_selected",
+        "toggle_clip_launcher_overdub",
+        "toggle_arranger_overdub",
+        "scene_add",
+        "scene_launch",
+        "prepare_launcher_clip_slot",
+        "toggle_arranger_clip_launcher_visible",
+        "insert_seed_midi_clip",
         "set_device_parameter",
         # Device tools
         "toggle_device_bypass",
@@ -90,6 +136,21 @@ async def test_execute_tool_transport_play():
 
 
 @pytest.mark.asyncio
+async def test_execute_tool_transport_stop_and_playhead():
+    controller = MagicMock()
+    controller.client = MagicMock()
+    r1 = await execute_tool(controller, "transport_stop", {})
+    controller.client.stop.assert_called_once()
+    assert "stopped" in r1[0].text.lower()
+    r2 = await execute_tool(controller, "set_playhead_beats", {"beats": 16})
+    controller.client.set_playhead_beats.assert_called_with(16.0)
+    assert "16" in r2[0].text
+    r3 = await execute_tool(controller, "start_arranger_record", {})
+    controller.client.start_arranger_record.assert_called_once()
+    assert "record" in r3[0].text.lower()
+
+
+@pytest.mark.asyncio
 async def test_execute_tool_set_tempo():
     """Test execute_tool with set_tempo tool."""
     # Create mock controller
@@ -106,6 +167,70 @@ async def test_execute_tool_set_tempo():
     assert len(result) == 1
     assert result[0].type == "text"
     assert "120 BPM" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_play_midi_note_sequence():
+    controller = MagicMock()
+    controller.client = MagicMock()
+    notes = [
+        {"delay_ms": 0, "channel": 1, "note": 36, "velocity": 100},
+        {"delay_ms": 1, "channel": 1, "note": 36, "velocity": 0},
+    ]
+    with patch(
+        "bitwig_mcp_server.mcp.tools.asyncio.sleep", new_callable=AsyncMock
+    ) as mock_sleep:
+        result = await execute_tool(
+            controller, "play_midi_note_sequence", {"notes": notes}
+        )
+    assert mock_sleep.await_count == 2
+    assert controller.client.send_midi_note.call_count == 2
+    controller.client.send_midi_note.assert_any_call(1, 36, 100)
+    controller.client.send_midi_note.assert_any_call(1, 36, 0)
+    assert len(result) == 1
+    assert "2 steps" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_set_track_mute_state():
+    controller = MagicMock()
+    controller.client = MagicMock()
+    result = await execute_tool(
+        controller, "set_track_mute_state", {"track_index": 2, "muted": True}
+    )
+    controller.client.set_track_mute.assert_called_once_with(2, True)
+    assert "muted" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_add_instrument_track():
+    controller = MagicMock()
+    controller.client = MagicMock()
+    result = await execute_tool(controller, "add_instrument_track", {})
+    controller.client.add_track_instrument.assert_called_once()
+    assert "instrument" in result[0].text.lower()
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_insert_seed_midi_clip():
+    controller = MagicMock()
+    controller.client = MagicMock()
+    fake_path = Path("C:/seed/test.mid")
+    with patch(
+        "bitwig_mcp_server.seed_midi.write_seed_midi_file",
+        return_value=fake_path,
+    ) as wsf:
+        result = await execute_tool(
+            controller,
+            "insert_seed_midi_clip",
+            {"track_index": 2, "slot_index": 3},
+        )
+    wsf.assert_called_once_with("kick_four_on_floor", bars=1)
+    controller.client.prepare_launcher_clip_slot.assert_called_once_with(2, 3)
+    controller.client.launcher_clip_insert_file.assert_called_once_with(
+        2, 3, str(fake_path)
+    )
+    assert "kick_four_on_floor" in result[0].text
 
 
 @pytest.mark.asyncio

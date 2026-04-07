@@ -164,7 +164,7 @@ async def enhance_index_with_descriptions(persistent_dir: str = None):
     logger.info(f"Enhanced {updated_count} devices with descriptions")
 
 
-async def main():
+async def async_main():
     """Main function to handle command-line arguments."""
     parser = argparse.ArgumentParser(description="Bitwig Device Index Enhancement Tool")
 
@@ -181,5 +181,10 @@ async def main():
     await enhance_index_with_descriptions(persistent_dir=args.persistent_dir)
 
 
+def main():
+    """Console-script entry point for bitwig-enhance-index."""
+    asyncio.run(async_main())
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

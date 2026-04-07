@@ -6,9 +6,9 @@ natural language descriptions of audio tasks.
 """
 
 import logging
-import os
 from typing import Any, Dict, List, Optional
 
+from bitwig_mcp_server.paths import browser_index_persistent_dir
 from bitwig_mcp_server.utils.browser_indexer import BitwigBrowserIndexer
 
 # Setup logging
@@ -25,12 +25,7 @@ class BitwigDeviceRecommender:
             persistent_dir: Directory where the ChromaDB data is stored
         """
         if persistent_dir is None:
-            # Use the data directory in the project by default
-            persistent_dir = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                "data",
-                "browser_index",
-            )
+            persistent_dir = browser_index_persistent_dir()
 
         self.indexer = BitwigBrowserIndexer(persistent_dir=persistent_dir)
 

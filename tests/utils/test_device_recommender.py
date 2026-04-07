@@ -11,7 +11,7 @@ from bitwig_mcp_server.utils.device_recommender import BitwigDeviceRecommender
 @pytest.fixture
 def temp_index_dir():
     """Create temporary directory for test index"""
-    with tempfile.TemporaryDirectory() as tmpdir:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         yield tmpdir
 
 

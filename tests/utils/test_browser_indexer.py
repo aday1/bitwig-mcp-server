@@ -20,7 +20,7 @@ from bitwig_mcp_server.utils.browser_indexer import (
 @pytest.fixture
 def temp_index_dir():
     """Create temporary directory for test index"""
-    with tempfile.TemporaryDirectory() as tmpdir:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         yield tmpdir
 
 
@@ -46,10 +46,14 @@ def mock_osc_controller():
         "/browser/filter/2/item/1/exists": True,
         "/browser/filter/2/item/1/name": "Bitwig",
         "/browser/filter/2/item/1/isSelected": True,
+        "/browser/filter/1/selectedItemName": "Synthesizer",
+        "/browser/filter/2/selectedItemName": "Bitwig",
         "/browser/result/1/exists": True,
         "/browser/result/1/name": "Polysynth",
+        "/browser/result/1/fileType": "Instrument",
         "/browser/result/2/exists": True,
         "/browser/result/2/name": "FM-4",
+        "/browser/result/2/fileType": "Instrument",
         "/browser/result/3/exists": False,
     }
 
@@ -201,9 +205,9 @@ async def test_navigate_to_everything_tab(mock_osc_controller):
     # Test navigating to Everything tab
     result = await indexer.navigate_to_everything_tab()
 
-    # Check that the function succeeded and the browser was opened
     assert result is True
-    indexer.client.browse_for_device.assert_called_once_with("after")
+    # Already on Everything tab: implementation returns without opening the browser
+    indexer.client.browse_for_device.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -246,12 +250,14 @@ async def test_collect_browser_metadata_with_pagination():
         # Category filter
         "/browser/filter/1/exists": True,
         "/browser/filter/1/name": "Category",
+        "/browser/filter/1/selectedItemName": "Synthesizer",
         **{"/browser/filter/1/item/1/exists": True for i in range(1, 17)},
         **{"/browser/filter/1/item/1/isSelected": True for i in range(1, 17)},
         **{"/browser/filter/1/item/1/name": "Synthesizer" for i in range(1, 17)},
         # Creator filter
         "/browser/filter/2/exists": True,
         "/browser/filter/2/name": "Creator",
+        "/browser/filter/2/selectedItemName": "Bitwig",
         **{"/browser/filter/2/item/1/exists": True for i in range(1, 17)},
         **{"/browser/filter/2/item/1/isSelected": True for i in range(1, 17)},
         **{"/browser/filter/2/item/1/name": "Bitwig" for i in range(1, 17)},
@@ -270,12 +276,14 @@ async def test_collect_browser_metadata_with_pagination():
         # Category filter
         "/browser/filter/1/exists": True,
         "/browser/filter/1/name": "Category",
+        "/browser/filter/1/selectedItemName": "Effect",
         **{"/browser/filter/1/item/1/exists": True for i in range(1, 8)},
         **{"/browser/filter/1/item/1/isSelected": True for i in range(1, 8)},
         **{"/browser/filter/1/item/1/name": "Effect" for i in range(1, 8)},
         # Creator filter
         "/browser/filter/2/exists": True,
         "/browser/filter/2/name": "Creator",
+        "/browser/filter/2/selectedItemName": "Bitwig",
         **{"/browser/filter/2/item/1/exists": True for i in range(1, 8)},
         **{"/browser/filter/2/item/1/isSelected": True for i in range(1, 8)},
         **{"/browser/filter/2/item/1/name": "Bitwig" for i in range(1, 8)},
@@ -340,26 +348,20 @@ async def test_collect_browser_metadata_with_pagination():
     assert browser_items[22].metadata["category"] == "Effect"
     assert browser_items[22].metadata["creator"] == "Bitwig"
 
-    # Verify we advanced to page 2, but didn't try page 3 since we can detect
-    # the last page by having fewer than 16 items
-    assert current_page[0] == 1
-
-    # This is correct behavior - our implementation detects that page 2 is the last page
-    # because it has fewer than 16 items, so it doesn't advance to page 3
+    # Pagination advances until an empty page; with 3 mock pages we end on page index 2
+    assert current_page[0] == 2
 
 
 @pytest.mark.asyncio
 async def test_index_browser_content(temp_index_dir):
     """Test indexing browser content"""
-    # Create indexer
     indexer = BitwigBrowserIndexer(persistent_dir=temp_index_dir)
 
-    # Mock controller initialization to succeed
     async def mock_init_controller():
+        indexer.controller = MagicMock()
         indexer.client = MagicMock()
         return True
 
-    # Create sample devices
     devices = [
         BrowserItem(
             name="Polysynth",
@@ -387,9 +389,18 @@ async def test_index_browser_content(temp_index_dir):
         ),
     ]
 
-    # Mock all necessary methods
+    async def empty_contexts(*_args, **_kwargs):
+        return {}
+
     with patch.object(
         indexer, "initialize_controller", side_effect=mock_init_controller
+    ), patch.object(indexer, "check_total_browser_items", return_value=0), patch.object(
+        indexer, "navigate_browser_tabs", return_value=["Instruments"]
+    ), patch.object(
+        indexer, "navigate_to_tab", return_value=True
+    ), patch(
+        "bitwig_mcp_server.utils.browser_indexer.setup_browser_contexts",
+        side_effect=empty_contexts,
     ), patch.object(
         indexer, "collect_browser_metadata", return_value=devices
     ), patch.object(
@@ -397,17 +408,14 @@ async def test_index_browser_content(temp_index_dir):
     ), patch.object(indexer, "close_controller"), patch.object(
         indexer.collection, "add"
     ):
-        # Run the indexing
         await indexer.index_browser_content()
 
-        # Check method calls
         indexer.initialize_controller.assert_called_once()
         indexer.collect_browser_metadata.assert_called_once()
-        assert indexer.create_embedding.call_count == 2  # Called for each device
+        assert indexer.create_embedding.call_count == 2
         indexer.collection.add.assert_called_once()
         indexer.close_controller.assert_called_once()
 
-        # Verify the call to collection.add
         call_args = indexer.collection.add.call_args[1]
         assert len(call_args["ids"]) == 2
         assert len(call_args["embeddings"]) == 2
@@ -535,11 +543,7 @@ async def test_build_index(temp_index_dir):
 
             return indexer
 
-        # Patch the build_index function and call our test version
-        with patch(
-            "bitwig_mcp_server.utils.browser_indexer.build_index",
-            side_effect=test_build,
-        ):
+        with patch("tests.utils.test_browser_indexer.build_index", side_effect=test_build):
             result = await build_index(persistent_dir=temp_index_dir)
 
             # Check results
