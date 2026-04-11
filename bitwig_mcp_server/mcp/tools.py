@@ -955,6 +955,10 @@ def get_bitwig_tools() -> List[Tool]:
                 "drums_all_in_one_gm_8bar = full kit on one track (ch10); put Drum Machine on that track. "
                 "Many patterns auto-map to _8bar companions when bars=8 (e.g. kick_four_on_floor -> "
                 "kick_four_on_floor_8bar). See seed_midi.SEED_PATTERN_NAMES. "
+                "IMPORTANT: track_index and slot_index refer to the current OSC track/clip BANK "
+                "(the visible page in DrivenByMoss), not absolute project track order. Use "
+                "navigate_track_bank previous with page=true several times, or scroll_bank_pages_previous, "
+                "so indices 1..8 line up with the tracks you see. "
                 "After loading, use open_track_device_browser + commit to insert Organ, Polymer, Drum Machine, Sampler."
             ),
             inputSchema={
@@ -971,6 +975,19 @@ def get_bitwig_tools() -> List[Tool]:
                         "type": "integer",
                         "description": "1 or 8; 8 selects long / companion pattern",
                         "default": 1,
+                    },
+                    "scroll_bank_pages_previous": {
+                        "type": "integer",
+                        "description": (
+                            "Before insert: call navigate_track_bank(previous, page=true) this many times "
+                            "to move the OSC bank toward the start of the project (best-effort)."
+                        ),
+                        "default": 0,
+                    },
+                    "post_prepare_delay_sec": {
+                        "type": "number",
+                        "description": "Seconds to wait after selecting the slot before insertFile (Bitwig UI sync).",
+                        "default": 0.28,
                     },
                 },
                 "required": ["track_index", "slot_index"],
@@ -2722,19 +2739,31 @@ async def execute_tool(
             s = arguments.get("slot_index")
             pattern = arguments.get("pattern", "kick_four_on_floor")
             bars = int(arguments.get("bars", 1))
+            scroll_pp = int(arguments.get("scroll_bank_pages_previous", 0) or 0)
+            delay_sec = float(arguments.get("post_prepare_delay_sec", 0.28) or 0.0)
             if t is None or s is None:
                 raise ValueError("Missing track_index or slot_index")
             if bars not in (1, 8):
                 raise ValueError("bars must be 1 or 8")
+            scroll_pp = max(0, min(scroll_pp, 64))
+            delay_sec = max(0.0, min(delay_sec, 3.0))
+            for _ in range(scroll_pp):
+                controller.client.navigate_track_bank("previous", page=True)
             path = write_seed_midi_file(str(pattern), bars=bars)
+            fp = str(path.resolve())
+            if os.name == "nt":
+                fp = fp.replace("\\", "/")
             controller.client.prepare_launcher_clip_slot(int(t), int(s))
-            controller.client.launcher_clip_insert_file(
-                int(t), int(s), str(path)
-            )
+            if delay_sec > 0:
+                await asyncio.sleep(delay_sec)
+            controller.client.launcher_clip_insert_file(int(t), int(s), fp)
             return [
                 TextContent(
                     type="text",
-                    text=f"Inserted seed {pattern!r} bars={bars} -> {path.name}",
+                    text=(
+                        f"Inserted seed {pattern!r} bars={bars} scroll_bank_pages_previous={scroll_pp} "
+                        f"-> {path.name}"
+                    ),
                 )
             ]
 

@@ -216,10 +216,13 @@ async def test_execute_tool_insert_seed_midi_clip():
     controller = MagicMock()
     controller.client = MagicMock()
     fake_path = Path("C:/seed/test.mid")
-    with patch(
-        "bitwig_mcp_server.seed_midi.write_seed_midi_file",
-        return_value=fake_path,
-    ) as wsf:
+    with (
+        patch(
+            "bitwig_mcp_server.seed_midi.write_seed_midi_file",
+            return_value=fake_path,
+        ) as wsf,
+        patch("bitwig_mcp_server.mcp.tools.asyncio.sleep", new_callable=AsyncMock),
+    ):
         result = await execute_tool(
             controller,
             "insert_seed_midi_clip",
@@ -227,10 +230,39 @@ async def test_execute_tool_insert_seed_midi_clip():
         )
     wsf.assert_called_once_with("kick_four_on_floor", bars=1)
     controller.client.prepare_launcher_clip_slot.assert_called_once_with(2, 3)
-    controller.client.launcher_clip_insert_file.assert_called_once_with(
-        2, 3, str(fake_path)
-    )
+    controller.client.navigate_track_bank.assert_not_called()
+    args = controller.client.launcher_clip_insert_file.call_args[0]
+    assert args[0] == 2 and args[1] == 3
+    assert str(args[2]).replace("\\", "/") == "C:/seed/test.mid"
     assert "kick_four_on_floor" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_insert_seed_midi_clip_scroll_bank():
+    controller = MagicMock()
+    controller.client = MagicMock()
+    fake_path = Path("C:/seed/x.mid")
+    with (
+        patch(
+            "bitwig_mcp_server.seed_midi.write_seed_midi_file",
+            return_value=fake_path,
+        ),
+        patch("bitwig_mcp_server.mcp.tools.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        await execute_tool(
+            controller,
+            "insert_seed_midi_clip",
+            {
+                "track_index": 1,
+                "slot_index": 1,
+                "pattern": "kick_four_on_floor",
+                "scroll_bank_pages_previous": 2,
+            },
+        )
+    assert controller.client.navigate_track_bank.call_count == 2
+    for c in controller.client.navigate_track_bank.call_args_list:
+        assert c[0][0] == "previous"
+        assert c[1]["page"] is True
 
 
 @pytest.mark.asyncio
